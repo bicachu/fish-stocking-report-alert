@@ -5,12 +5,16 @@ import pandas as pd
 import pdfplumber
 import smtplib
 from datetime import datetime
+from dotenv import load_dotenv
 from email.message import EmailMessage
 
 
+load_dotenv()
 gmail_user = os.environ.get('USER')
 gmail_password = os.environ.get('PASSWORD')
 recipient = os.environ.get('RECIPIENT')
+print(gmail_password)
+print(gmail_user)
 
 # define target url to scrape daily
 url = 'https://portal.ct.gov/-/media/DEEP/fishing/weekly_reports/CurrentStockingReport.pdf'
