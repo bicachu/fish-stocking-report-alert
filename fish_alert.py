@@ -1,0 +1,94 @@
+#! python3
+import os
+import requests
+import pandas as pd
+import pdfplumber
+import smtplib
+from datetime import datetime
+from email.message import EmailMessage
+
+
+gmail_user = os.environ.get('USER')
+gmail_password = os.environ.get('PASSWORD')
+recipient = os.environ.get('RECIPIENT')
+
+# define target url to scrape daily
+url = 'https://portal.ct.gov/-/media/DEEP/fishing/weekly_reports/CurrentStockingReport.pdf'
+LAST_STOCK_DATE = open('last_stocked_date.txt', 'r').readlines()[0]  # read in last stocked date reported
+
+# download PDF file
+response = requests.get(url)
+with open('fish_stocking_report.pdf', 'wb') as f:
+    f.write(response.content)
+file = 'fish_stocking_report.pdf'
+
+# check if PDF has been updated
+pdf = pdfplumber.open(file)
+first_page = pdf.pages[0]
+text = first_page.extract_text()
+remaining_text = text.split('STOCKING UPDATE AS OF ', 1)[1]  # find location of last stock date
+stock_update_date = remaining_text.split(':')[0]  # extract date only
+
+ERROR_flag = False
+if stock_update_date != LAST_STOCK_DATE:
+    LAST_STOCK_DATE = stock_update_date
+    tables = [page.extract_table() for page in pdf.pages[:8]]
+    records = [item for lst in tables for item in lst]  # unnest the list of lists of lists => list of lists
+
+    df = pd.DataFrame(records, columns=['location', 'towns', 'stocked', 'notes'])
+
+    try:
+        df['last_update'] = df['stocked'].str.partition(';')[0].str.strip()
+        df['last_update'] = df['last_update'].str.partition(',')[0].str.strip()
+        df['last_update'].replace(r'^\s*$', '1/1', regex=True, inplace=True)
+        df['last_update'] = df['last_update'].apply(lambda x: (x + '/2021') if 'No longer' not in x else '1/1/2021')
+        df['last_update'] = pd.to_datetime(df['last_update'], format='%m/%d/%Y')
+
+        past_3days_stocked_df = df[df['last_update'] > datetime.now() - pd.to_timedelta('3day')]
+
+        email_content = past_3days_stocked_df[['location', 'towns', 'last_update']].to_string(index_names=False,
+                                                                                              index=False,
+                                                                                              justify='right',
+                                                                                              col_space=70)
+
+        # email properties
+        msg = EmailMessage()
+        msg.set_content(email_content)
+        msg['Subject'] = 'Alert - Fish Stocking Report'
+        msg['From'] = gmail_user
+        msg['To'] = "bicajohn1@gmail.com"
+
+        # email send request
+        try:
+            server = smtplib.SMTP_SSL('smtp.gmail.com', 465)
+            server.login(gmail_user, gmail_password)
+            server.send_message(msg)
+            server.quit()
+            print("Email sent!")
+
+        except Exception as e:
+            error_text = "Error in email alert due to".format({e})
+            msg.set_content()
+            msg['Subject'] = 'ERROR: Alert - Fish Stocking Report'
+            server = smtplib.SMTP_SSL('smtp.gmail.com', 465)
+            server.login(gmail_user, gmail_password)
+            server.send_message(msg)
+            server.quit()
+
+        # update last stocked date
+        with open('last_stocked_date.txt', 'w') as text_file:
+            text_file.write(LAST_STOCK_DATE)
+
+    except:
+        ERROR_flag = True
+
+if ERROR_flag:
+    msg = EmailMessage()
+    msg.set_content("There is an issue with the scrape program.")
+    msg['Subject'] = 'ERROR: Alert - Fish Stocking Report'
+    msg['From'] = gmail_user
+    msg['To'] = recipient
+    server = smtplib.SMTP_SSL('smtp.gmail.com', 465)
+    server.login(gmail_user, gmail_password)
+    server.send_message(msg)
+    server.quit()
