@@ -7,18 +7,27 @@ import smtplib
 from datetime import datetime
 from dotenv import load_dotenv
 from email.message import EmailMessage
+from github import Github
+from config import get_github_access_token
 
+# setup connection to Github repo
+github = Github(get_github_access_token())
+repo = github.get_user().get_repo('fish-stocking-report-alert')
 
+# extract date from text file
+file_content = repo.get_contents("last_stocked_date.txt")
+LAST_STOCK_DATE = file_content.decoded_content.decode()
+# to read in local file instead #
+# LAST_STOCK_DATE = open('last_stocked_date.txt', 'r').readlines()[0]  #
+
+# grab environment variables needed for alert
 load_dotenv()
 gmail_user = os.environ.get('USER')
 gmail_password = os.environ.get('PASSWORD')
 recipient = os.environ.get('RECIPIENT')
-print(gmail_password)
-print(gmail_user)
 
-# define target url to scrape daily
+# define target url to scrape
 url = 'https://portal.ct.gov/-/media/DEEP/fishing/weekly_reports/CurrentStockingReport.pdf'
-LAST_STOCK_DATE = open('last_stocked_date.txt', 'r').readlines()[0]  # read in last stocked date reported
 
 # download PDF file
 response = requests.get(url)
@@ -33,6 +42,7 @@ text = first_page.extract_text()
 remaining_text = text.split('STOCKING UPDATE AS OF ', 1)[1]  # find location of last stock date
 stock_update_date = remaining_text.split(':')[0]  # extract date only
 
+# main program to extract fish stock updates
 ERROR_flag = False
 if stock_update_date != LAST_STOCK_DATE:
     LAST_STOCK_DATE = stock_update_date
@@ -60,7 +70,7 @@ if stock_update_date != LAST_STOCK_DATE:
         msg.set_content(email_content)
         msg['Subject'] = 'Alert - Fish Stocking Report'
         msg['From'] = gmail_user
-        msg['To'] = "bicajohn1@gmail.com"
+        msg['To'] = recipient + "@gmail.com"
 
         # email send request
         try:
@@ -73,15 +83,17 @@ if stock_update_date != LAST_STOCK_DATE:
         except Exception as e:
             error_text = "Error in email alert due to".format({e})
             msg.set_content()
-            msg['Subject'] = 'ERROR: Alert - Fish Stocking Report'
+            msg['Subject'] = 'ERROR WITH EMAIL: Alert - Fish Stocking Report'
             server = smtplib.SMTP_SSL('smtp.gmail.com', 465)
             server.login(gmail_user, gmail_password)
             server.send_message(msg)
             server.quit()
 
-        # update last stocked date
-        with open('last_stocked_date.txt', 'w') as text_file:
-            text_file.write(LAST_STOCK_DATE)
+        # update last stocked date on Github repository
+        repo.update_file(file_content.path, "update date", LAST_STOCK_DATE, file_content.sha)
+        # to update local file #
+        # with open('last_stocked_date.txt', 'w') as text_file:
+        #     text_file.write(LAST_STOCK_DATE)
 
     except:
         ERROR_flag = True
@@ -89,7 +101,7 @@ if stock_update_date != LAST_STOCK_DATE:
 if ERROR_flag:
     msg = EmailMessage()
     msg.set_content("There is an issue with the scrape program.")
-    msg['Subject'] = 'ERROR: Alert - Fish Stocking Report'
+    msg['Subject'] = 'ERROR WITH SCRAPING: Alert - Fish Stocking Report'
     msg['From'] = gmail_user
     msg['To'] = recipient
     server = smtplib.SMTP_SSL('smtp.gmail.com', 465)
